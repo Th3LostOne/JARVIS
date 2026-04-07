@@ -1,0 +1,314 @@
+╔══════════════════════════════════════════════════════════════════╗
+║            J.A.R.V.I.S — LINKS Mark II  |  Command Reference    ║
+╚══════════════════════════════════════════════════════════════════╝
+
+  Wake word: "JARVIS ..."
+  Say "JARVIS" alone → prompted for a command (8 sec window)
+  No response after wake word → dismissed automatically
+
+════════════════════════════════════════════════════════════════════
+  APPS
+════════════════════════════════════════════════════════════════════
+
+  OPEN                          CLOSE
+  ────────────────────────────  ────────────────────────────
+  "open spotify"                "close spotify"
+  "open brave"                  "close brave"
+  "open discord"                "close discord"
+  "open vs code"                "close vs code"
+  "open steam"                  "close steam"
+  "open vlc"                    "close vlc"
+  "open obs"                    "close obs"
+  "open notepad"                "close notepad"
+  "open calculator"             "close calculator"
+  "open explorer"
+  "open task manager"
+  "open paint"
+  "open word"
+  "open excel"
+  "open powerpoint"
+  "open league of legends"
+  "open osu"
+  "open antigravity"
+
+════════════════════════════════════════════════════════════════════
+  WEBSITES  —  all open in Brave
+════════════════════════════════════════════════════════════════════
+
+  "open youtube"                 youtube.com
+  "open gmail"                   mail.google.com
+  "open google"                  google.com
+  "open github"                  github.com
+  "open reddit"                  reddit.com
+  "open twitter"                 twitter.com
+  "open netflix"                 netflix.com
+  "open twitch"                  twitch.tv
+  "open spotify web"             open.spotify.com
+  "open chatgpt"                 chat.openai.com
+  "open claude"                  claude.ai
+  "open amazon"                  amazon.com
+  "open wikipedia"               wikipedia.org
+  "open brightspace carleton"    brightspace.carleton.ca
+  "open brightspace algonquin"   brightspace.algonquincollege.com
+  "open nokia"                   Nokia MPLS Student Guide (PDF)
+  "open nokia services"          Nokia Services Architecture Guide (PDF)
+  "open anime"                   aniwatchtv.to
+  "open micheal"                 web.ncf.ca/andersonm/
+
+  Tip: say any domain directly — "go to twitch.tv", "open github.com"
+
+════════════════════════════════════════════════════════════════════
+  WEB SEARCH
+════════════════════════════════════════════════════════════════════
+
+  "search for [query]"
+  "look up [query]"
+  "google [query]"
+
+════════════════════════════════════════════════════════════════════
+  MODES  —  launch multiple apps / sites at once
+════════════════════════════════════════════════════════════════════
+
+  "work mode"        Discord  +  Brave  +  Spotify
+  "gaming mode"      Discord  +  Spotify  +  Steam  +  League
+  "research mode"    Wikipedia  +  Google Scholar  +  Google
+  "exam mode"        YouTube  +  Brightspace (both)  +  Nokia guides
+                     +  Micheal's site
+  "movie mode"       xprime.stream  +  aether.mom
+  "anime mode"       AniWatch  +  Discord
+
+  Tip: "mode" is flexible — "exam time", "gaming session",
+       "work setup" all work the same way.
+
+════════════════════════════════════════════════════════════════════
+  MEDIA CONTROLS
+════════════════════════════════════════════════════════════════════
+
+  "play"  /  "pause"            Toggle playback
+  "next song"  /  "skip"        Next track
+  "previous song"               Previous track
+  "stop music"                  Stop playback
+
+  Add "spotify" or "music" to target Spotify directly.
+  e.g. "pause spotify"  /  "next spotify song"
+
+════════════════════════════════════════════════════════════════════
+  VOLUME
+════════════════════════════════════════════════════════════════════
+
+  "volume up"                   Increase volume  (stepped)
+  "volume down"                 Decrease volume  (stepped)
+  "mute"                        Toggle mute
+  "set volume to 50"            Set exact level  (0 – 100)
+  "set volume to 75 percent"    Same with percent keyword
+
+════════════════════════════════════════════════════════════════════
+  AUDIO OUTPUT  —  powered by SoundSwitch  (Alt+F11)
+════════════════════════════════════════════════════════════════════
+
+  "switch audio"                Cycle to next output device
+  "switch output"               ↑ same
+  "cycle audio"                 ↑ same
+  "switch to headphones"        ↑ same
+  "switch to speakers"          ↑ same
+
+  Requires SoundSwitch running in the system tray.
+
+════════════════════════════════════════════════════════════════════
+  TIMERS & REMINDERS
+════════════════════════════════════════════════════════════════════
+
+  Timers
+    "set a timer for 5 minutes"
+    "set a timer for 1 hour 30 minutes"
+    "set a 30 second timer"
+    "cancel timer"               Cancels the most recent timer
+
+  Reminders  (speaks the message when time is up)
+    "remind me in 10 minutes to check the oven"
+    "remind me in 2 hours to submit the assignment"
+    "remind me in 30 seconds to stretch"
+
+  Supports:  seconds, minutes, hours  (combinable)
+
+════════════════════════════════════════════════════════════════════
+  WINDOW MANAGEMENT
+════════════════════════════════════════════════════════════════════
+
+  "minimize window"             Win + Down arrow
+  "maximize window"             Win + Up arrow
+  "close window"                Alt + F4
+
+════════════════════════════════════════════════════════════════════
+  SYSTEM
+════════════════════════════════════════════════════════════════════
+
+  "what time is it"             Speaks the current time
+  "what day is it"              Speaks today's date
+  "system status"               Speaks CPU % and RAM %
+  "battery status"              Speaks battery level and charge state
+  "check my internet"           Tests connection and speaks latency
+  "what's my ip"                Speaks local IP address
+  "what's my public ip"         Speaks external IP address
+  "what's the weather"          Opens wttr.in in Brave
+  "lock screen"                 Locks the workstation
+  "sleep"  /  "hibernate"       Suspends the PC
+  "shutdown"                    Shuts down  (10 sec delay)
+  "restart"  /  "reboot"        Restarts PC  (10 sec delay)
+
+════════════════════════════════════════════════════════════════════
+  DISPLAY & THEME
+════════════════════════════════════════════════════════════════════
+
+  "dark mode"                   Switch Windows to dark mode
+  "light mode"                  Switch Windows to light mode
+  "toggle dark mode"            Toggle between dark and light
+  "brightness up"               Increase screen brightness
+  "brightness down"             Decrease screen brightness
+
+════════════════════════════════════════════════════════════════════
+  WINDOWS SETTINGS  —  opens directly to that page
+════════════════════════════════════════════════════════════════════
+
+  "open settings"               Main Settings page
+  "open sound settings"         Sound settings
+  "open display settings"       Display settings
+  "open bluetooth settings"     Bluetooth settings
+  "open wifi settings"          Wi-Fi / network settings
+  "open network settings"       Network settings
+  "open power settings"         Power & sleep settings
+  "open update settings"        Windows Update
+  "open privacy settings"       Privacy settings
+  "open storage settings"       Storage settings
+  "open app settings"           Apps & features
+
+════════════════════════════════════════════════════════════════════
+  SCREENSHOT
+════════════════════════════════════════════════════════════════════
+
+  Basic
+    "take a screenshot"
+      →  screenshot_[timestamp].png  saved to Desktop
+
+  Custom name
+    "screenshot named diagram"
+    "screenshot called report"
+
+  Custom folder  (known folders)
+    "screenshot in downloads"
+    "screenshot in documents"
+    Available: downloads, desktop, documents, pictures, music, videos
+
+  New folder  (created on Desktop)
+    "screenshot in a new folder called diagrams"
+
+  Combined
+    "screenshot named budget in documents"
+    "screenshot called report in a new folder called finance"
+
+════════════════════════════════════════════════════════════════════
+  FOLDERS  —  opens in File Explorer
+════════════════════════════════════════════════════════════════════
+
+  "open downloads"              ~/Downloads
+  "open desktop"                ~/Desktop
+  "open documents"              ~/Documents
+  "open pictures"               ~/Pictures
+  "open music"                  ~/Music
+  "open videos"                 ~/Videos
+  "open appdata"                %APPDATA%
+  "open jarvis"                 Jarvis install folder
+
+════════════════════════════════════════════════════════════════════
+  NOTES
+════════════════════════════════════════════════════════════════════
+
+  "note that [text]"            Save a timestamped note
+  "remember that [text]"        ↑ same
+  "make a note [text]"          ↑ same
+  "read my notes"               Speaks your last 3 notes
+  "clear my notes"              Wipes all saved notes
+
+  Notes saved to:  jarvis_notes.txt  (Jarvis folder)
+
+════════════════════════════════════════════════════════════════════
+  QUICK MATH
+════════════════════════════════════════════════════════════════════
+
+  "what is 5 + 3"
+  "what is 100 / 4 * 2"
+  Supports:  +  -  *  /  and parentheses
+
+════════════════════════════════════════════════════════════════════
+  FUN / RANDOM
+════════════════════════════════════════════════════════════════════
+
+  "flip a coin"                 Heads or Tails
+  "roll a die"                  Random number 1 – 6
+  "random number"               Random number 1 – 100
+  "random number between 1 and 50"   Random in custom range
+
+════════════════════════════════════════════════════════════════════
+  CLIPBOARD
+════════════════════════════════════════════════════════════════════
+
+  "what's in my clipboard"      Reads clipboard content aloud
+  "read clipboard"              ↑ same
+
+════════════════════════════════════════════════════════════════════
+  RECYCLE BIN
+════════════════════════════════════════════════════════════════════
+
+  "empty recycle bin"           Clears the recycle bin silently
+
+════════════════════════════════════════════════════════════════════
+  JARVIS SELF-MANAGEMENT
+════════════════════════════════════════════════════════════════════
+
+  "restart jarvis"              Reload JARVIS without closing manually
+  "reload jarvis"               ↑ same
+  "reset jarvis"                ↑ same
+
+════════════════════════════════════════════════════════════════════
+  AI  —  fallback for anything not matched above
+════════════════════════════════════════════════════════════════════
+
+  Any unrecognised question or request is sent to Ollama (llama3).
+
+  Behaviour:
+    ✓  Auto-starts Ollama if not running
+    ✓  Auto-pulls llama3 on first use  (one-time download)
+
+════════════════════════════════════════════════════════════════════
+  SYSTEM TRAY  —  right-click the  J  icon in the taskbar
+════════════════════════════════════════════════════════════════════
+
+  Status                 Speaks "all systems operational"
+  Screenshot             Takes a screenshot to Desktop
+  System Info            Speaks CPU % and RAM %
+  Lock Screen            Locks the workstation
+  ──────────────────────
+  Open Downloads         Opens Downloads folder
+  Open Desktop           Opens Desktop folder
+  Open Notes             Opens jarvis_notes.txt
+  View Log               Opens jarvis.log  (auto-clears every 10 min)
+  Restart Ollama         Kills and restarts the Ollama server
+  ──────────────────────
+  Voice Commands (Help)  Shows this command list as a popup
+  ──────────────────────
+  Restart JARVIS         Reloads JARVIS instantly
+  Quit JARVIS            Exits the assistant
+
+════════════════════════════════════════════════════════════════════
+  INSTALL / SETUP
+════════════════════════════════════════════════════════════════════
+
+  pip install speechrecognition pyttsx3 requests pyaudio \
+              pystray pillow edge-tts pygame psutil
+
+  Ollama:        https://ollama.com  →  ollama pull llama3
+                 (auto-started and auto-pulled by JARVIS if needed)
+
+  SoundSwitch:   must be running in the system tray for audio switching
+
+════════════════════════════════════════════════════════════════════

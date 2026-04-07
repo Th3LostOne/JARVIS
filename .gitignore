@@ -1,0 +1,27 @@
+# Logs
+jarvis.log
+discord_utils.log
+
+# TTS audio cache
+.tts_cache/
+
+# Notes
+jarvis_notes.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Temp / scratch
+tmp_spotify.py
+
+# VS Code
+.vscode/
+
+# OS
+Thumbs.db
+desktop.ini
