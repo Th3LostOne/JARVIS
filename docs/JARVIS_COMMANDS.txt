@@ -270,6 +270,23 @@
   "reset jarvis"                ↑ same
 
 ════════════════════════════════════════════════════════════════════
+  WORLD NEWS BRIEFING
+════════════════════════════════════════════════════════════════════
+
+  "what's going on in the world"
+  "what's happening in the world"
+  "world news"
+  "latest news"
+  "current events"
+  "news update"
+  "catch me up on the news"
+  "what's in the news"
+
+  JARVIS fetches live headlines from BBC, Reuters, Al Jazeera,
+  The Guardian, and NPR — then narrates a spoken summary via
+  Ollama and opens the top 2 articles in Brave.
+
+════════════════════════════════════════════════════════════════════
   AI  —  fallback for anything not matched above
 ════════════════════════════════════════════════════════════════════
 

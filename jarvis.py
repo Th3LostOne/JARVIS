@@ -28,8 +28,10 @@ import random
 # ─────────────────────────────────────────
 #  LOGGING — capture all output to file
 # ─────────────────────────────────────────
-_LOG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis.log")
-_NO_WINDOW = _NO_WINDOW
+_BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+_LOG_FILE  = os.path.join(_BASE_DIR, "logs", "jarvis.log")
+_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+os.makedirs(os.path.join(_BASE_DIR, "logs"), exist_ok=True)
 
 class HourlyClearHandler(logging.FileHandler):
     def __init__(self, filename, mode='a', encoding=None, delay=False):
@@ -79,7 +81,7 @@ WAKE_WORD     = "jarvis"
 TTS_RATE      = 175
 TTS_VOLUME    = 1.0
 TTS_VOICE     = "en-GB-RyanNeural"           # Microsoft neural voice — British male, very Jarvis-like
-TTS_EDGE_RATE = "+20%"                       # edge-tts speed tweak — faster delivery, more fluid
+TTS_EDGE_RATE = "+40%"                       # edge-tts speed tweak — faster delivery, more fluid
 
 # ─────────────────────────────────────────
 #  QUICK-ACCESS FOLDERS
@@ -93,10 +95,10 @@ FOLDER_MAP = {
     "music":      os.path.expanduser("~/Music"),
     "videos":     os.path.expanduser("~/Videos"),
     "appdata":    os.path.expandvars("%APPDATA%"),
-    "jarvis":     os.path.dirname(os.path.abspath(__file__)),
+    "jarvis":     _BASE_DIR,
 }
 
-NOTES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis_notes.txt")
+NOTES_FILE = os.path.join(_BASE_DIR, "jarvis_notes.txt")
 
 SITE_MAP = {
     "youtube":               "https://www.youtube.com",
@@ -298,7 +300,7 @@ except ImportError as _tts_err:
 _tts_queue = queue.Queue()
 
 # ── TTS audio cache — persist to disk so common phrases are instant on repeat ──
-_TTS_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tts_cache")
+_TTS_CACHE_DIR = os.path.join(_BASE_DIR, ".tts_cache")
 os.makedirs(_TTS_CACHE_DIR, exist_ok=True)
 _audio_cache: dict = {}  # text → cached file path
 
@@ -307,10 +309,13 @@ def _tts_cache_key(text):
 
 def _get_cached_tts(text):
     key = _tts_cache_key(text)
-    if key in _audio_cache and os.path.exists(_audio_cache[key]):
-        return _audio_cache[key]
+    if key in _audio_cache:
+        p = _audio_cache[key]
+        if os.path.exists(p) and os.path.getsize(p) > 0:
+            return p
+        del _audio_cache[key]
     path = os.path.join(_TTS_CACHE_DIR, key + ".mp3")
-    if os.path.exists(path):
+    if os.path.exists(path) and os.path.getsize(path) > 0:
         _audio_cache[key] = path
         return path
     return None
@@ -318,9 +323,17 @@ def _get_cached_tts(text):
 async def _cache_tts_async(text):
     key = _tts_cache_key(text)
     path = os.path.join(_TTS_CACHE_DIR, key + ".mp3")
-    if not os.path.exists(path):
-        communicate = edge_tts.Communicate(text, voice=TTS_VOICE, rate=TTS_EDGE_RATE)
-        await communicate.save(path)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        _audio_cache[key] = path
+        return path
+    tmp = path + ".tmp"
+    try:
+        await edge_tts.Communicate(text, voice=TTS_VOICE, rate=TTS_EDGE_RATE).save(tmp)
+        os.replace(tmp, path)  # atomic: only visible once fully written
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
     _audio_cache[key] = path
     return path
 
@@ -651,6 +664,13 @@ def parse_intent(text):
         hi = int(_rand_match.group(2)) if _rand_match.group(2) else 100
         return ("random", "number", lo, hi)
 
+    # World news briefing
+    if any(w in t for w in ["world news", "current events", "latest news", "news update",
+                             "what's going on in the world", "what is going on in the world",
+                             "what's happening in the world", "catch me up on the news",
+                             "what's in the news"]):
+        return ("world_news", None)
+
     # Audio device switching via SoundSwitch / nircmd
     # "switch to headphones", "switch to speakers", "switch to [device name]"
     _sw_specific = re.search(r'switch(?:ing)?\s+(?:audio\s+)?(?:to|output\s+to)\s+(?:my\s+)?([\w\s]+)', t)
@@ -714,7 +734,8 @@ def _precache_quips():
         + ["JARVIS online. Good to be of service, sir.",
            "Yes, sir?", "At your service, sir.", "How can I help, sir?", "Standing by, sir.",
            "My apologies, sir.", "No worries, sir.",
-           "On it, sir.", "Let me think on that, sir.", "One moment, sir.", "Calculating, sir."]
+           "On it, sir.", "Let me think on that, sir.", "One moment, sir.", "Calculating, sir.",
+           "Scanning the feeds, sir.", "Pulling the latest headlines, sir.", "Checking global activity, sir."]
     ))
 
     async def _warm():
@@ -753,6 +774,33 @@ def _find_folder(name):
         except PermissionError:
             pass
     return None
+
+# ─────────────────────────────────────────
+#  NEWS FETCHER
+# ─────────────────────────────────────────
+def _fetch_headlines(max_per_feed=2):
+    """Fetch top headlines from RSS feeds. Returns list of (title, url) tuples."""
+    import xml.etree.ElementTree as ET
+    feeds = [
+        "http://feeds.bbci.co.uk/news/rss.xml",
+        "https://feeds.reuters.com/reuters/topNews",
+        "https://www.aljazeera.com/xml/rss/all.xml",
+        "https://www.theguardian.com/world/rss",
+        "https://feeds.npr.org/1001/rss.xml",
+    ]
+    headlines = []
+    for feed_url in feeds:
+        try:
+            r = requests.get(feed_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+            root = ET.fromstring(r.content)
+            for item in root.findall(".//item")[:max_per_feed]:
+                title = item.findtext("title", "").strip()
+                link  = item.findtext("link",  "").strip()
+                if title and link:
+                    headlines.append((title, link))
+        except Exception as e:
+            log.warning(f"RSS fetch failed ({feed_url}): {e}")
+    return headlines
 
 # ─────────────────────────────────────────
 #  COMMAND EXECUTOR
@@ -1249,6 +1297,25 @@ def process_command(text):
             speak(f"Your random number is {result}, sir.")
             log.info(f"Random number ({lo}-{hi}): {result}.")
 
+    elif intent == "world_news":
+        speak(random.choice(["Scanning the feeds, sir.", "Pulling the latest headlines, sir.", "Checking global activity, sir."]))
+        headlines = _fetch_headlines()
+        if not headlines:
+            speak("I'm unable to reach the news feeds at the moment, sir.")
+        else:
+            titles = [title for title, _ in headlines]
+            prompt = (
+                "Here are today's top news headlines:\n"
+                + "\n".join(f"- {t}" for t in titles)
+                + "\n\nBriefly summarise what is going on in the world based on these. "
+                  "Speak naturally in 3 to 4 sentences as JARVIS would."
+            )
+            speak(ask_ai(prompt))
+            links = [link for _, link in headlines[:2] if link.startswith("http")]
+            for i, link in enumerate(links):
+                open_in_brave(link, new_tab=i > 0)
+            log.info(f"World news: {len(headlines)} headlines, {len(links)} articles opened.")
+
     elif intent == "ai":
         speak(random.choice(["On it, sir.", "Let me think on that, sir.", "One moment, sir.", "Calculating, sir."]))
         reply = ask_ai(args[0])
@@ -1366,12 +1433,39 @@ def ask_ai(prompt):
 # ─────────────────────────────────────────
 #  SYSTEM TRAY ICON
 # ─────────────────────────────────────────
-def make_icon():
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+def make_icon(size=64):
+    from PIL import ImageFont
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d   = ImageDraw.Draw(img)
-    d.ellipse([0, 0, 63, 63], fill=(0, 20, 40))
-    d.text((20, 14), "J", fill=(0, 212, 255))
+    d.ellipse([0, 0, size - 1, size - 1], fill=(0, 20, 40))
+    try:
+        font = ImageFont.load_default(size=int(size * 0.65))
+        bb   = d.textbbox((0, 0), "J", font=font)
+        x    = (size - (bb[2] - bb[0])) // 2 - bb[0]
+        y    = (size - (bb[3] - bb[1])) // 2 - bb[1] - size // 14
+        d.text((x, y), "J", fill=(0, 212, 255), font=font)
+    except Exception:
+        d.text((int(20 * size / 64), int(14 * size / 64)), "J", fill=(0, 212, 255))
     return img
+
+def _init_app_icon():
+    ico_path = os.path.join(_BASE_DIR, "assets", "jarvis.ico")
+    try:
+        if not os.path.exists(ico_path):
+            make_icon(256).save(ico_path, format="ICO",
+                                sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+            log.info("  ✓ jarvis.ico generated.")
+        # Apply to the console window if one is visible (not hidden launch)
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            handle = ctypes.windll.user32.LoadImageW(
+                None, ico_path, 1, 0, 0, 0x10 | 0x40  # IMAGE_ICON | LR_LOADFROMFILE | LR_DEFAULTSIZE
+            )
+            if handle:
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, handle)  # WM_SETICON ICON_BIG
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, handle)  # WM_SETICON ICON_SMALL
+    except Exception as e:
+        log.debug(f"App icon init: {e}")
 
 def build_tray(on_ready=None):
     """Build the system tray icon.  *on_ready* is called once the tray
@@ -1460,6 +1554,7 @@ def build_tray(on_ready=None):
             "MATH: 'what is 5 + 3 * 2'\n"
             "CLIPBOARD: 'what's in my clipboard'\n"
             "MODES: 'work mode', 'gaming mode', 'anime mode', etc.\n"
+            "NEWS: 'what's going on in the world', 'world news', 'latest news'\n"
             "AI: anything else → Ollama (llama3)"
         )
         try:
@@ -1564,6 +1659,7 @@ if __name__ == "__main__":
     log.info("═" * 50)
     log.info("JARVIS — LINKS Mark II starting up")
     log.info("═" * 50)
+    _init_app_icon()
     _check_ollama_startup()
 
     def _start_listener():

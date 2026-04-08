@@ -1,6 +1,5 @@
 # Logs
-jarvis.log
-discord_utils.log
+logs/
 
 # TTS audio cache
 .tts_cache/
@@ -15,9 +14,6 @@ __pycache__/
 .venv/
 venv/
 env/
-
-# Temp / scratch
-tmp_spotify.py
 
 # VS Code
 .vscode/

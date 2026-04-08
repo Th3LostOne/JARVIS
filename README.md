@@ -195,6 +195,15 @@ empty recycle bin
 restart jarvis
 ```
 
+### World News Briefing
+```
+what's going on in the world
+what's happening in the world
+world news / latest news / current events
+news update / catch me up on the news
+```
+Fetches live headlines from BBC, Reuters, Al Jazeera, The Guardian, and NPR. Ollama narrates a spoken summary, then the top 2 articles open in Brave.
+
 ### AI Fallback
 Anything not matched above is sent to **Ollama (llama3)** running locally. JARVIS responds in character as the AI assistant from Iron Man.
 
