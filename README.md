@@ -1,5 +1,5 @@
 # J.A.R.V.I.S — LINKS Mark II
-
+I AM VIBE CODING ALL OF THIS SO I AM TAKING NO CREDIT
 A lightweight Windows voice assistant that runs silently in the system tray. Wake it with **"Jarvis"**, give a command, and it handles the rest — opening apps, controlling media, taking screenshots, running system commands, and falling back to a local AI (Ollama) for anything else.
 
 ---
