@@ -4,6 +4,7 @@
 ║   Lightweight Background Voice Assistant ║
 ╚══════════════════════════════════════════╝
 Install: pip install speechrecognition pyttsx3 requests pyaudio pystray pillow
+         pip install pyaudiowpatch   ← system audio (loopback) for music recognition
 Requires Ollama running locally: https://ollama.com  (ollama pull llama3)
 """
 
@@ -28,10 +29,8 @@ import random
 # ─────────────────────────────────────────
 #  LOGGING — capture all output to file
 # ─────────────────────────────────────────
-_BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-_LOG_FILE  = os.path.join(_BASE_DIR, "logs", "jarvis.log")
+_LOG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis.log")
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
-os.makedirs(os.path.join(_BASE_DIR, "logs"), exist_ok=True)
 
 class HourlyClearHandler(logging.FileHandler):
     def __init__(self, filename, mode='a', encoding=None, delay=False):
@@ -81,7 +80,7 @@ WAKE_WORD     = "jarvis"
 TTS_RATE      = 175
 TTS_VOLUME    = 1.0
 TTS_VOICE     = "en-GB-RyanNeural"           # Microsoft neural voice — British male, very Jarvis-like
-TTS_EDGE_RATE = "+40%"                       # edge-tts speed tweak — faster delivery, more fluid
+TTS_EDGE_RATE = "+30%"                       # edge-tts speed tweak — faster delivery, more fluid
 
 # ─────────────────────────────────────────
 #  QUICK-ACCESS FOLDERS
@@ -95,10 +94,85 @@ FOLDER_MAP = {
     "music":      os.path.expanduser("~/Music"),
     "videos":     os.path.expanduser("~/Videos"),
     "appdata":    os.path.expandvars("%APPDATA%"),
-    "jarvis":     _BASE_DIR,
+    "jarvis":     os.path.dirname(os.path.abspath(__file__)),
 }
 
-NOTES_FILE = os.path.join(_BASE_DIR, "jarvis_notes.txt")
+NOTES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis_notes.txt")
+
+# Stopwatch state
+_stopwatch_start = None   # float timestamp when running, None otherwise
+_last_spoken     = None   # last text spoken — for "say that again"
+
+# ─────────────────────────────────────────
+#  UNIT CONVERSION TABLE  (base SI unit per category)
+# ─────────────────────────────────────────
+_UNIT_GROUPS = {
+    "length": {
+        "m": 1, "meter": 1, "meters": 1,
+        "km": 1000, "kilometer": 1000, "kilometers": 1000,
+        "mile": 1609.344, "miles": 1609.344,
+        "foot": 0.3048, "feet": 0.3048, "ft": 0.3048,
+        "inch": 0.0254, "inches": 0.0254,
+        "cm": 0.01, "centimeter": 0.01, "centimeters": 0.01,
+        "yard": 0.9144, "yards": 0.9144,
+    },
+    "mass": {
+        "kg": 1, "kilogram": 1, "kilograms": 1,
+        "g": 0.001, "gram": 0.001, "grams": 0.001,
+        "lb": 0.453592, "pound": 0.453592, "pounds": 0.453592, "lbs": 0.453592,
+        "oz": 0.0283495, "ounce": 0.0283495, "ounces": 0.0283495,
+    },
+    "volume": {
+        "l": 1, "liter": 1, "liters": 1,
+        "ml": 0.001, "milliliter": 0.001, "milliliters": 0.001,
+        "gallon": 3.78541, "gallons": 3.78541,
+        "pint": 0.473176, "pints": 0.473176,
+        "cup": 0.236588, "cups": 0.236588,
+    },
+    "speed": {
+        "mps": 1,
+        "mph": 0.44704,
+        "kph": 0.277778, "kmh": 0.277778,
+        "knot": 0.514444, "knots": 0.514444,
+    },
+}
+
+# ─────────────────────────────────────────
+#  CITY → TIMEZONE MAP
+# ─────────────────────────────────────────
+_CITY_TIMEZONES = {
+    "london": "Europe/London", "uk": "Europe/London", "england": "Europe/London",
+    "paris": "Europe/Paris", "france": "Europe/Paris",
+    "berlin": "Europe/Berlin", "germany": "Europe/Berlin",
+    "amsterdam": "Europe/Amsterdam", "netherlands": "Europe/Amsterdam",
+    "rome": "Europe/Rome", "italy": "Europe/Rome",
+    "madrid": "Europe/Madrid", "spain": "Europe/Madrid",
+    "moscow": "Europe/Moscow", "russia": "Europe/Moscow",
+    "istanbul": "Europe/Istanbul", "turkey": "Europe/Istanbul",
+    "dubai": "Asia/Dubai", "uae": "Asia/Dubai",
+    "riyadh": "Asia/Riyadh", "saudi arabia": "Asia/Riyadh",
+    "mumbai": "Asia/Kolkata", "delhi": "Asia/Kolkata", "india": "Asia/Kolkata",
+    "karachi": "Asia/Karachi", "pakistan": "Asia/Karachi",
+    "bangkok": "Asia/Bangkok", "thailand": "Asia/Bangkok",
+    "singapore": "Asia/Singapore",
+    "jakarta": "Asia/Jakarta", "indonesia": "Asia/Jakarta",
+    "hong kong": "Asia/Hong_Kong",
+    "beijing": "Asia/Shanghai", "shanghai": "Asia/Shanghai", "china": "Asia/Shanghai",
+    "seoul": "Asia/Seoul", "korea": "Asia/Seoul",
+    "tokyo": "Asia/Tokyo", "japan": "Asia/Tokyo",
+    "sydney": "Australia/Sydney", "australia": "Australia/Sydney",
+    "new york": "America/New_York", "nyc": "America/New_York",
+    "chicago": "America/Chicago",
+    "los angeles": "America/Los_Angeles", "la": "America/Los_Angeles",
+    "toronto": "America/Toronto", "ottawa": "America/Toronto",
+    "vancouver": "America/Vancouver",
+    "mexico city": "America/Mexico_City", "mexico": "America/Mexico_City",
+    "sao paulo": "America/Sao_Paulo", "brazil": "America/Sao_Paulo",
+    "buenos aires": "America/Argentina/Buenos_Aires", "argentina": "America/Argentina/Buenos_Aires",
+    "cairo": "Africa/Cairo", "egypt": "Africa/Cairo",
+    "nairobi": "Africa/Nairobi", "kenya": "Africa/Nairobi",
+    "johannesburg": "Africa/Johannesburg", "south africa": "Africa/Johannesburg",
+}
 
 SITE_MAP = {
     "youtube":               "https://www.youtube.com",
@@ -300,7 +374,7 @@ except ImportError as _tts_err:
 _tts_queue = queue.Queue()
 
 # ── TTS audio cache — persist to disk so common phrases are instant on repeat ──
-_TTS_CACHE_DIR = os.path.join(_BASE_DIR, ".tts_cache")
+_TTS_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tts_cache")
 os.makedirs(_TTS_CACHE_DIR, exist_ok=True)
 _audio_cache: dict = {}  # text → cached file path
 
@@ -385,7 +459,9 @@ except Exception: pass
 threading.Thread(target=_tts_worker, daemon=True).start()
 
 def speak(text):
+    global _last_spoken
     log.info(f"🔊 {text}")
+    _last_spoken = text
     _tts_queue.put(text)
 
 # ─────────────────────────────────────────
@@ -664,6 +740,13 @@ def parse_intent(text):
         hi = int(_rand_match.group(2)) if _rand_match.group(2) else 100
         return ("random", "number", lo, hi)
 
+    # F1 news briefing
+    if any(w in t for w in ["f1 news", "formula 1 news", "formula one news",
+                             "f1 update", "formula 1 update", "f1 headlines",
+                             "what's happening in f1", "what's going on in f1",
+                             "formula 1", "latest f1", "f1 latest"]):
+        return ("f1_news", None)
+
     # World news briefing
     if any(w in t for w in ["world news", "current events", "latest news", "news update",
                              "what's going on in the world", "what is going on in the world",
@@ -681,6 +764,76 @@ def parse_intent(text):
     if any(w in t for w in ["switch audio", "switch output", "switch sound", "cycle audio",
                              "switch my audio", "change audio output", "change sound output"]):
         return ("audio_switch", None)
+
+    # Now playing (Spotify + browser)
+    if any(w in t for w in ["what's playing", "what is playing", "now playing",
+                             "what song is playing", "current song",
+                             "what's the song", "what's on"]):
+        return ("now_playing", None)
+
+    # Shazam-style audio recognition from mic
+    if any(w in t for w in ["what song is this", "what's this song", "identify this song",
+                             "identify the song", "shazam this", "shazam",
+                             "what music is this", "what's this music",
+                             "recognize this song", "song recognition",
+                             "what is this song", "find this song"]):
+        return ("identify_music", None)
+
+    # List active timers
+    if any(w in t for w in ["list timers", "active timers", "what timers", "how many timers",
+                             "check timers", "show timers", "my timers"]):
+        return ("list_timers", None)
+
+    # Stopwatch
+    if any(w in t for w in ["start stopwatch", "start the stopwatch", "begin stopwatch", "stopwatch start"]):
+        return ("stopwatch", "start")
+    if any(w in t for w in ["stop stopwatch", "pause stopwatch", "end stopwatch", "stopwatch stop"]):
+        return ("stopwatch", "stop")
+    if any(w in t for w in ["reset stopwatch", "clear stopwatch", "stopwatch reset"]):
+        return ("stopwatch", "reset")
+    if any(w in t for w in ["elapsed time", "stopwatch time", "check stopwatch", "how long has it been",
+                             "how long have i been"]):
+        return ("stopwatch", "check")
+
+    # Tell a joke
+    if any(w in t for w in ["tell me a joke", "tell a joke", "make me laugh", "say something funny",
+                             "give me a joke"]):
+        return ("joke", None)
+
+    # Repeat last
+    if any(w in t for w in ["say that again", "repeat that", "repeat last", "what did you say",
+                             "can you repeat that"]):
+        return ("repeat_last", None)
+
+    # Time in another city
+    _time_in_m = re.search(r"what(?:'s|\s+is)\s+(?:the\s+)?time\s+in\s+(.+)", t)
+    if _time_in_m:
+        return ("time_in", _time_in_m.group(1).strip().rstrip("?"))
+
+    # Unit / temperature conversion
+    _conv_m = re.search(r"convert\s+([\d\.]+)\s+([\w]+)\s+(?:to|into|in)\s+([\w]+)", t)
+    if _conv_m:
+        return ("unit_convert", float(_conv_m.group(1)), _conv_m.group(2).lower(), _conv_m.group(3).lower())
+
+    # Word definition
+    _def_word = None
+    if t.startswith("define "):
+        _def_word = t[7:].split()[0].rstrip("?")
+    else:
+        _dm = re.search(r"what does (\w+) mean", t)
+        if _dm:
+            _def_word = _dm.group(1)
+        else:
+            _dm2 = re.search(r"(?:meaning|definition) of (\w+)", t)
+            if _dm2:
+                _def_word = _dm2.group(1)
+    if _def_word:
+        return ("define", _def_word)
+
+    # Wikipedia quick lookup — "who is X" / "who was X" / "tell me about X"
+    _wiki_m = re.search(r"^(?:who\s+(?:is|was|are|were)|tell me about)\s+(.+)", t)
+    if _wiki_m:
+        return ("wikipedia", _wiki_m.group(1).strip().rstrip("?"))
 
     return ("ai", t)
 
@@ -735,7 +888,12 @@ def _precache_quips():
            "Yes, sir?", "At your service, sir.", "How can I help, sir?", "Standing by, sir.",
            "My apologies, sir.", "No worries, sir.",
            "On it, sir.", "Let me think on that, sir.", "One moment, sir.", "Calculating, sir.",
-           "Scanning the feeds, sir.", "Pulling the latest headlines, sir.", "Checking global activity, sir."]
+           "Scanning the feeds, sir.", "Pulling the latest headlines, sir.", "Checking global activity, sir.",
+           "Stopwatch started, sir.", "Stopwatch stopped.", "Stopwatch reset, sir.",
+           "The stopwatch isn't running, sir.", "You have no active timers, sir.",
+           "Let me find one for you, sir.", "Looking that up, sir.",
+           "Nothing appears to be playing on Spotify at the moment, sir.",
+           "Checking the paddock feeds, sir.", "Pulling the latest from the pit lane, sir.", "Scanning the grid, sir."]
     ))
 
     async def _warm():
@@ -778,6 +936,32 @@ def _find_folder(name):
 # ─────────────────────────────────────────
 #  NEWS FETCHER
 # ─────────────────────────────────────────
+def _fetch_f1_headlines(max_per_feed=3):
+    """Fetch top F1 headlines from RSS feeds. Returns list of (title, url) tuples."""
+    import xml.etree.ElementTree as ET
+    feeds = [
+        "https://www.autosport.com/rss/f1/news/",
+        "https://www.motorsport.com/rss/f1/news/",
+        "https://feeds.feedburner.com/SkySportsF1",
+        "https://www.racefans.net/feed/",
+        "https://www.bbc.co.uk/sport/formula1/rss.xml",
+    ]
+    headlines = []
+    for feed_url in feeds:
+        try:
+            r = requests.get(feed_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+            root = ET.fromstring(r.content)
+            for item in root.findall(".//item")[:max_per_feed]:
+                title = item.findtext("title", "").strip()
+                link  = item.findtext("link",  "").strip()
+                if title and link:
+                    headlines.append((title, link))
+            if headlines:
+                break  # one working feed is enough for a sharp briefing
+        except Exception as e:
+            log.warning(f"F1 RSS fetch failed ({feed_url}): {e}")
+    return headlines
+
 def _fetch_headlines(max_per_feed=2):
     """Fetch top headlines from RSS feeds. Returns list of (title, url) tuples."""
     import xml.etree.ElementTree as ET
@@ -801,6 +985,287 @@ def _fetch_headlines(max_per_feed=2):
         except Exception as e:
             log.warning(f"RSS fetch failed ({feed_url}): {e}")
     return headlines
+
+def _get_spotify_now_playing():
+    """Return 'Track - Artist' from Spotify's window title, or None if nothing is playing."""
+    user32 = ctypes.windll.user32
+    try:
+        output = subprocess.check_output(
+            ['tasklist', '/fi', 'imagename eq Spotify.exe', '/fo', 'csv', '/nh'],
+            text=True, creationflags=_NO_WINDOW
+        )
+        pids = {int(line.split(',')[1].strip('"')) for line in output.strip().split('\n')
+                if line and 'Spotify.exe' in line}
+    except Exception:
+        return None
+    if not pids:
+        return None
+    result = []
+    def _enum_proc(hwnd, lParam):
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids:
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 4:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value.strip()
+                if " - " in title and title not in ("Spotify", "Spotify Free", "Spotify Premium"):
+                    result.append(title)
+        return True
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    user32.EnumWindows(WNDENUMPROC(_enum_proc), 0)
+    return result[0] if result else None
+
+def _get_music_from_browser():
+    """Scan visible browser window titles for currently playing media.
+    Returns (source, display_string) or None."""
+    user32 = ctypes.windll.user32
+    candidates = []
+
+    def _enum(hwnd, lParam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length < 3:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = buf.value.strip()
+        if title:
+            candidates.append(title)
+        return True
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    user32.EnumWindows(WNDENUMPROC(_enum), 0)
+
+    for title in candidates:
+        # YouTube: "Song Name - Artist Name - YouTube"  or  "Video Title - YouTube"
+        if title.endswith("- YouTube") or "- YouTube" in title:
+            name = re.sub(r'\s*[-–]\s*YouTube\s*$', '', title).strip()
+            if name and name.lower() not in ("youtube", "youtube music", "home"):
+                return ("YouTube", name)
+        # YouTube Music: "Song - Artist - YouTube Music"
+        if title.endswith("- YouTube Music") or "- YouTube Music" in title:
+            name = re.sub(r'\s*[-–]\s*YouTube Music\s*$', '', title).strip()
+            if name and name.lower() not in ("youtube music", "home", "library"):
+                return ("YouTube Music", name)
+        # Spotify Web Player: "Song - Artist | Spotify"
+        if "Spotify" in title and (" - " in title or " | " in title):
+            name = re.sub(r'\s*[|]\s*Spotify.*$', '', title)
+            name = re.sub(r'\s*[-–]\s*Spotify.*$', '', name).strip()
+            if name and name.lower() not in ("spotify", "home", "search"):
+                return ("Spotify Web", name)
+        # Netflix: "Show Name | Netflix" — less useful but readable
+        if title.endswith("| Netflix") or "| Netflix" in title:
+            name = re.sub(r'\s*[|]\s*Netflix\s*$', '', title).strip()
+            if name and name.lower() != "netflix":
+                return ("Netflix", name)
+        # Twitch: "StreamerName - Twitch"
+        if title.endswith("- Twitch") or "- Twitch" in title:
+            name = re.sub(r'\s*[-–]\s*Twitch\s*$', '', title).strip()
+            if name and name.lower() not in ("twitch", "home", "browse"):
+                return ("Twitch", name)
+
+    return None
+
+def _record_system_audio(duration=6):
+    """Capture system audio via WASAPI loopback (what's playing through speakers).
+    Returns (frames, channels, rate, sample_width) or None."""
+    import wave
+    try:
+        import pyaudiowpatch as pyaudio
+    except ImportError:
+        log.warning("pyaudiowpatch not installed — run: pip install pyaudiowpatch")
+        return None
+
+    p = pyaudio.PyAudio()
+    try:
+        wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+    except OSError:
+        p.terminate()
+        log.warning("WASAPI not available on this system.")
+        return None
+
+    # Find loopback device matching the default output
+    default_out = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+    loopback = None
+    for i in range(p.get_device_count()):
+        dev = p.get_device_info_by_index(i)
+        if dev.get("isLoopbackDevice") and default_out["name"] in dev["name"]:
+            loopback = dev
+            break
+    if not loopback:  # fall back to any loopback device
+        for i in range(p.get_device_count()):
+            dev = p.get_device_info_by_index(i)
+            if dev.get("isLoopbackDevice"):
+                loopback = dev
+                break
+
+    if not loopback:
+        p.terminate()
+        log.warning("No WASAPI loopback device found.")
+        return None
+
+    channels = min(int(loopback["maxInputChannels"]), 2)
+    rate     = int(loopback["defaultSampleRate"])
+    chunk    = 1024
+    log.info(f"Loopback device: {loopback['name']} | {channels}ch | {rate}Hz")
+
+    try:
+        stream = p.open(
+            format=pyaudio.paInt16,
+            channels=channels,
+            rate=rate,
+            input=True,
+            input_device_index=int(loopback["index"]),
+            frames_per_buffer=chunk,
+        )
+        frames = [stream.read(chunk, exception_on_overflow=False)
+                  for _ in range(int(rate / chunk * duration))]
+        stream.stop_stream()
+        stream.close()
+        sample_width = p.get_sample_size(pyaudio.paInt16)
+    except Exception as e:
+        log.error(f"System audio capture failed: {e}")
+        p.terminate()
+        return None
+
+    p.terminate()
+    return frames, channels, rate, sample_width
+
+def _recognize_audio(duration=6):
+    """Capture system audio (loopback) and identify via AudD.
+    Falls back to microphone if loopback is unavailable.
+    Returns dict with title/artist/album/spotify or None."""
+    import wave
+
+    frames = channels = rate = sample_width = None
+    source = None
+
+    # ── System audio (loopback) ──────────────────────────────────────
+    result = _record_system_audio(duration)
+    if result:
+        frames, channels, rate, sample_width = result
+        source = "system audio"
+
+    # ── Microphone fallback ──────────────────────────────────────────
+    if frames is None:
+        log.info("Falling back to microphone for audio capture.")
+        try:
+            import pyaudio
+            RATE, CHUNK, CHANNELS = 44100, 1024, 1
+            p = pyaudio.PyAudio()
+            stream = p.open(format=pyaudio.paInt16, channels=CHANNELS, rate=RATE,
+                            input=True, frames_per_buffer=CHUNK)
+            frames = [stream.read(CHUNK, exception_on_overflow=False)
+                      for _ in range(int(RATE / CHUNK * duration))]
+            stream.stop_stream()
+            stream.close()
+            sample_width = p.get_sample_size(pyaudio.paInt16)
+            p.terminate()
+            channels, rate = CHANNELS, RATE
+            source = "microphone"
+        except ImportError:
+            log.warning("Neither pyaudiowpatch nor pyaudio available.")
+            return None
+        except Exception as e:
+            log.error(f"Mic capture failed: {e}")
+            return None
+
+    # ── Write temp WAV ────────────────────────────────────────────────
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_path = f.name
+    try:
+        with wave.open(tmp_path, 'wb') as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(rate)
+            wf.writeframes(b''.join(frames))
+    except Exception as e:
+        log.error(f"WAV write error: {e}")
+        try: os.unlink(tmp_path)
+        except OSError: pass
+        return None
+
+    log.info(f"Sending {source} audio to AudD ({duration}s, {rate}Hz, {channels}ch)...")
+
+    # ── AudD recognition ─────────────────────────────────────────────
+    try:
+        with open(tmp_path, 'rb') as audio_file:
+            r = requests.post(
+                "https://api.audd.io/",
+                data={"return": "spotify,apple_music"},
+                files={"file": ("audio.wav", audio_file, "audio/wav")},
+                timeout=20,
+            )
+        try: os.unlink(tmp_path)
+        except OSError: pass
+
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "success" and data.get("result"):
+                res = data["result"]
+                spotify_url = (res.get("spotify") or {}).get("external_urls", {}).get("spotify", "")
+                return {
+                    "title":   res.get("title", ""),
+                    "artist":  res.get("artist", ""),
+                    "album":   res.get("album", ""),
+                    "spotify": spotify_url,
+                }
+            log.info(f"AudD: no match — {data.get('status')} {data.get('error', {})}")
+        else:
+            log.warning(f"AudD HTTP {r.status_code}: {r.text[:200]}")
+        return None
+    except Exception as e:
+        log.error(f"AudD request error: {e}")
+        try: os.unlink(tmp_path)
+        except OSError: pass
+        return None
+
+def _fetch_joke():
+    """Fetch a random joke. Returns (setup, punchline) or None."""
+    try:
+        r = requests.get("https://official-joke-api.appspot.com/random_joke", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("setup", ""), data.get("punchline", "")
+    except Exception as e:
+        log.warning(f"Joke API failed: {e}")
+    return None
+
+def _convert_units(value, from_unit, to_unit):
+    """Convert between units. Returns (result, category) or (None, None) if incompatible."""
+    temp_map = {"f": "fahrenheit", "c": "celsius", "k": "kelvin",
+                "fahrenheit": "fahrenheit", "celsius": "celsius", "kelvin": "kelvin"}
+    if from_unit in temp_map and to_unit in temp_map:
+        f, t = temp_map[from_unit], temp_map[to_unit]
+        if f == t:                                   return value, "temperature"
+        if f == "celsius"    and t == "fahrenheit":  return value * 9/5 + 32, "temperature"
+        if f == "fahrenheit" and t == "celsius":     return (value - 32) * 5/9, "temperature"
+        if f == "celsius"    and t == "kelvin":      return value + 273.15, "temperature"
+        if f == "kelvin"     and t == "celsius":     return value - 273.15, "temperature"
+        if f == "fahrenheit" and t == "kelvin":      return (value - 32) * 5/9 + 273.15, "temperature"
+        if f == "kelvin"     and t == "fahrenheit":  return (value - 273.15) * 9/5 + 32, "temperature"
+    for category, table in _UNIT_GROUPS.items():
+        if from_unit in table and to_unit in table:
+            return value * table[from_unit] / table[to_unit], category
+    return None, None
+
+def _get_time_in_city(city):
+    """Return current time string for the given city, or None if unknown."""
+    tz_name = _CITY_TIMEZONES.get(city.lower().strip())
+    if not tz_name:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+        now = datetime.datetime.now(tz)
+        hour = now.strftime("%I").lstrip("0") or "12"
+        return f"{hour}:{now.strftime('%M')} {now.strftime('%p')}"
+    except Exception as e:
+        log.warning(f"Timezone lookup error: {e}")
+        return None
 
 # ─────────────────────────────────────────
 #  COMMAND EXECUTOR
@@ -1297,6 +1762,25 @@ def process_command(text):
             speak(f"Your random number is {result}, sir.")
             log.info(f"Random number ({lo}-{hi}): {result}.")
 
+    elif intent == "f1_news":
+        speak(random.choice(["Checking the paddock feeds, sir.", "Pulling the latest from the pit lane, sir.", "Scanning the grid, sir."]))
+        headlines = _fetch_f1_headlines()
+        if not headlines:
+            speak("I'm unable to reach the Formula 1 feeds at the moment, sir.")
+        else:
+            titles = [title for title, _ in headlines]
+            prompt = (
+                "Here are the latest Formula 1 news headlines:\n"
+                + "\n".join(f"- {t}" for t in titles)
+                + "\n\nBriefly summarise what is happening in Formula 1 based on these. "
+                  "Speak naturally in 3 to 4 sentences as JARVIS would. Keep it punchy and on-topic."
+            )
+            speak(ask_ai(prompt))
+            links = [link for _, link in headlines[:2] if link.startswith("http")]
+            for i, link in enumerate(links):
+                open_in_brave(link, new_tab=i > 0)
+            log.info(f"F1 news: {len(headlines)} headlines, {len(links)} articles opened.")
+
     elif intent == "world_news":
         speak(random.choice(["Scanning the feeds, sir.", "Pulling the latest headlines, sir.", "Checking global activity, sir."]))
         headlines = _fetch_headlines()
@@ -1315,6 +1799,184 @@ def process_command(text):
             for i, link in enumerate(links):
                 open_in_brave(link, new_tab=i > 0)
             log.info(f"World news: {len(headlines)} headlines, {len(links)} articles opened.")
+
+    elif intent == "now_playing":
+        track = _get_spotify_now_playing()
+        if track:
+            speak(f"Currently playing on Spotify: {track}, sir.")
+            log.info(f"Now playing (Spotify): {track}")
+        else:
+            browser = _get_music_from_browser()
+            if browser:
+                source, name = browser
+                speak(f"Currently on {source}: {name}, sir.")
+                log.info(f"Now playing ({source}): {name}")
+            else:
+                speak("I couldn't detect anything playing, sir.")
+
+    elif intent == "identify_music":
+        speak("Sampling your system audio, sir. One moment.")
+        log.info("Music recognition: capturing system audio...")
+        result = _recognize_audio(duration=6)
+        if result and result.get("title"):
+            title  = result["title"]
+            artist = result["artist"]
+            album  = result.get("album", "")
+            speak(f"That's {title} by {artist}{', from the album ' + album if album else ''}, sir.")
+            if result.get("spotify"):
+                open_in_brave(result["spotify"])
+                log.info(f"Opened Spotify: {result['spotify']}")
+            else:
+                query = f"{title} {artist}".replace(" ", "+")
+                open_in_brave(f"https://www.youtube.com/results?search_query={query}")
+            log.info(f"Identified: {title} – {artist}")
+        else:
+            browser = _get_music_from_browser()
+            if browser:
+                source, name = browser
+                speak(f"Audio recognition came up empty, but {source} is showing: {name}, sir.")
+            else:
+                speak("I wasn't able to identify that one, sir. Make sure something is audible and try again.")
+
+    elif intent == "list_timers":
+        if not _active_timers:
+            speak("You have no active timers, sir.")
+        else:
+            labels = list(_active_timers.keys())
+            if len(labels) == 1:
+                speak(f"You have one active timer: {labels[0]}, sir.")
+            else:
+                speak(f"You have {len(labels)} active timers: {', '.join(labels)}, sir.")
+        log.info(f"Active timers: {list(_active_timers.keys())}")
+
+    elif intent == "stopwatch":
+        global _stopwatch_start
+        action = args[0]
+        if action == "start":
+            _stopwatch_start = time.time()
+            speak("Stopwatch started, sir.")
+            log.info("Stopwatch started.")
+        elif action == "stop":
+            if _stopwatch_start is None:
+                speak("The stopwatch isn't running, sir.")
+            else:
+                elapsed = time.time() - _stopwatch_start
+                _stopwatch_start = None
+                m, s = divmod(int(elapsed), 60)
+                h, m = divmod(m, 60)
+                if h:
+                    speak(f"Stopwatch stopped. Elapsed time: {h} hours, {m} minutes and {s} seconds, sir.")
+                elif m:
+                    speak(f"Stopwatch stopped. Elapsed time: {m} minutes and {s} seconds, sir.")
+                else:
+                    speak(f"Stopwatch stopped. Elapsed time: {s} seconds, sir.")
+                log.info(f"Stopwatch stopped: {elapsed:.1f}s")
+        elif action == "check":
+            if _stopwatch_start is None:
+                speak("The stopwatch isn't running, sir.")
+            else:
+                elapsed = time.time() - _stopwatch_start
+                m, s = divmod(int(elapsed), 60)
+                h, m = divmod(m, 60)
+                if h:
+                    speak(f"Elapsed time: {h} hours, {m} minutes and {s} seconds, sir.")
+                elif m:
+                    speak(f"Elapsed time: {m} minutes and {s} seconds, sir.")
+                else:
+                    speak(f"Elapsed time: {s} seconds, sir.")
+        elif action == "reset":
+            _stopwatch_start = None
+            speak("Stopwatch reset, sir.")
+            log.info("Stopwatch reset.")
+
+    elif intent == "joke":
+        speak("Let me find one for you, sir.")
+        joke = _fetch_joke()
+        if joke:
+            setup, punchline = joke
+            speak(setup)
+            time.sleep(1.5)
+            speak(punchline)
+        else:
+            speak(ask_ai("Tell me a short clever joke in character as JARVIS. One setup line, one punchline. No markdown."))
+        log.info("Joke delivered.")
+
+    elif intent == "repeat_last":
+        if _last_spoken:
+            speak(_last_spoken)
+        else:
+            speak("I don't have anything to repeat, sir.")
+
+    elif intent == "time_in":
+        city = args[0]
+        result = _get_time_in_city(city)
+        if result:
+            speak(f"It is {result} in {city.title()}, sir.")
+        else:
+            speak(f"I'm afraid I don't have timezone data for {city}, sir.")
+        log.info(f"Time in {city}: {result}")
+
+    elif intent == "unit_convert":
+        value, from_unit, to_unit = args[0], args[1], args[2]
+        result, category = _convert_units(value, from_unit, to_unit)
+        if result is None:
+            speak(f"I can't convert {from_unit} to {to_unit}, sir. Those units may be incompatible.")
+        else:
+            formatted = f"{result:.6f}".rstrip("0").rstrip(".")
+            speak(f"{value} {from_unit} is {formatted} {to_unit}, sir.")
+        log.info(f"Unit convert: {value} {from_unit} → {to_unit} = {result}")
+
+    elif intent == "define":
+        word = args[0]
+        speak(f"Looking up {word}, sir.")
+        try:
+            r = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}", timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                meanings = data[0].get("meanings", [])
+                if meanings:
+                    part = meanings[0].get("partOfSpeech", "")
+                    defn = meanings[0].get("definitions", [{}])[0].get("definition", "")
+                    if defn:
+                        speak(f"{word.capitalize()}, {part}: {defn}")
+                    else:
+                        speak(f"I found {word} but couldn't extract a clean definition, sir.")
+                else:
+                    speak(f"No definition found for {word}, sir.")
+            else:
+                speak(f"I couldn't find a definition for {word} in my dictionary, sir.")
+        except Exception as e:
+            speak("I had trouble reaching the dictionary, sir.")
+            log.error(f"Dictionary lookup error: {e}")
+        log.info(f"Define: {word}")
+
+    elif intent == "wikipedia":
+        query = args[0]
+        speak("Looking that up, sir.")
+        try:
+            search_term = query.replace(" ", "_")
+            r = requests.get(
+                f"https://en.wikipedia.org/api/rest_v1/page/summary/{search_term}",
+                timeout=5, headers={"User-Agent": "JARVIS/2.0"}
+            )
+            if r.status_code == 200:
+                data = r.json()
+                extract = data.get("extract", "")
+                if extract:
+                    sentences = re.split(r'(?<=[.!?])\s+', extract)
+                    summary = " ".join(sentences[:2])
+                    speak(summary)
+                    page_url = data.get("content_urls", {}).get("desktop", {}).get("page", "")
+                    if page_url:
+                        open_in_brave(page_url)
+                else:
+                    speak(f"I found a page for {query} but couldn't extract a summary, sir.")
+            else:
+                speak(f"I couldn't find anything on Wikipedia for {query}, sir.")
+        except Exception as e:
+            speak("I had trouble reaching Wikipedia, sir.")
+            log.error(f"Wikipedia error: {e}")
+        log.info(f"Wikipedia lookup: {query}")
 
     elif intent == "ai":
         speak(random.choice(["On it, sir.", "Let me think on that, sir.", "One moment, sir.", "Calculating, sir."]))
@@ -1433,39 +2095,12 @@ def ask_ai(prompt):
 # ─────────────────────────────────────────
 #  SYSTEM TRAY ICON
 # ─────────────────────────────────────────
-def make_icon(size=64):
-    from PIL import ImageFont
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+def make_icon():
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d   = ImageDraw.Draw(img)
-    d.ellipse([0, 0, size - 1, size - 1], fill=(0, 20, 40))
-    try:
-        font = ImageFont.load_default(size=int(size * 0.65))
-        bb   = d.textbbox((0, 0), "J", font=font)
-        x    = (size - (bb[2] - bb[0])) // 2 - bb[0]
-        y    = (size - (bb[3] - bb[1])) // 2 - bb[1] - size // 14
-        d.text((x, y), "J", fill=(0, 212, 255), font=font)
-    except Exception:
-        d.text((int(20 * size / 64), int(14 * size / 64)), "J", fill=(0, 212, 255))
+    d.ellipse([0, 0, 63, 63], fill=(0, 20, 40))
+    d.text((20, 14), "J", fill=(0, 212, 255))
     return img
-
-def _init_app_icon():
-    ico_path = os.path.join(_BASE_DIR, "assets", "jarvis.ico")
-    try:
-        if not os.path.exists(ico_path):
-            make_icon(256).save(ico_path, format="ICO",
-                                sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
-            log.info("  ✓ jarvis.ico generated.")
-        # Apply to the console window if one is visible (not hidden launch)
-        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-        if hwnd:
-            handle = ctypes.windll.user32.LoadImageW(
-                None, ico_path, 1, 0, 0, 0x10 | 0x40  # IMAGE_ICON | LR_LOADFROMFILE | LR_DEFAULTSIZE
-            )
-            if handle:
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, handle)  # WM_SETICON ICON_BIG
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, handle)  # WM_SETICON ICON_SMALL
-    except Exception as e:
-        log.debug(f"App icon init: {e}")
 
 def build_tray(on_ready=None):
     """Build the system tray icon.  *on_ready* is called once the tray
@@ -1545,6 +2180,8 @@ def build_tray(on_ready=None):
             "SITES: 'open youtube', 'go to github'\n"
             "SEARCH: 'search for [query]'\n"
             "MEDIA: 'play', 'pause', 'next song', 'previous song'\n"
+            "         'what's playing', 'now playing'\n"
+            "         'what song is this', 'shazam this' (mic recognition)\n"
             "VOLUME: 'volume up/down', 'mute', 'set volume to 50'\n"
             "SYSTEM: 'system status', 'lock screen', 'screenshot'\n"
             "         'shutdown', 'restart', 'sleep'\n"
@@ -1552,9 +2189,20 @@ def build_tray(on_ready=None):
             "NOTES: 'note that [text]', 'read my notes'\n"
             "WEATHER: 'what's the weather'\n"
             "MATH: 'what is 5 + 3 * 2'\n"
+            "CONVERT: 'convert 5 miles to kilometers'\n"
+            "         'convert 100 fahrenheit to celsius'\n"
+            "DEFINE: 'define [word]', 'what does [word] mean'\n"
+            "LOOKUP: 'who is [person]', 'tell me about [topic]'\n"
+            "TIMERS: 'set a timer for 5 minutes', 'cancel timer'\n"
+            "         'list timers', 'my timers'\n"
+            "STOPWATCH: 'start stopwatch', 'stop stopwatch'\n"
+            "            'check stopwatch', 'reset stopwatch'\n"
+            "TIME: 'what time is it in Tokyo'\n"
             "CLIPBOARD: 'what's in my clipboard'\n"
             "MODES: 'work mode', 'gaming mode', 'anime mode', etc.\n"
-            "NEWS: 'what's going on in the world', 'world news', 'latest news'\n"
+            "NEWS: 'world news', 'f1 news', 'formula 1 update'\n"
+            "FUN: 'tell me a joke', 'flip a coin', 'roll a dice'\n"
+            "      'say that again', 'repeat that'\n"
             "AI: anything else → Ollama (llama3)"
         )
         try:
@@ -1618,7 +2266,7 @@ def listen_loop():
         log.info("🎙  Calibrating mic...")
         recognizer.adjust_for_ambient_noise(source, duration=2)
         log.info(f"✅  Listening for '{WAKE_WORD.upper()}'")
-        speak("JARVIS online. Good to be of service, sir.")
+        speak("JARVIS online. Good to be of service sir.")
 
         while True:
             try:
@@ -1629,12 +2277,12 @@ def listen_loop():
                 if WAKE_WORD in text:
                     command = text.replace(WAKE_WORD, "", 1).strip(" ,.")
                     if not command:
-                        speak(random.choice(["Yes, sir?", "At your service, sir.", "How can I help, sir?", "Standing by, sir."]))
+                        speak(random.choice(["Yes, sir?", "Standing by, sir."]))
                         try:
                             audio2  = recognizer.listen(source, timeout=8, phrase_time_limit=12)
                             command = recognizer.recognize_google(audio2).lower()
                         except (sr.WaitTimeoutError, sr.UnknownValueError):
-                            speak(random.choice(["My apologies, sir.", "No worries, sir.", "Standing by, sir."]))
+                            speak(random.choice(["My apologies, sir.", "No worries, sir."]))
                             continue
                     log.info(f"⚡ Command: {command}")
                     threading.Thread(target=process_command, args=(command,), daemon=True).start()
@@ -1659,7 +2307,6 @@ if __name__ == "__main__":
     log.info("═" * 50)
     log.info("JARVIS — LINKS Mark II starting up")
     log.info("═" * 50)
-    _init_app_icon()
     _check_ollama_startup()
 
     def _start_listener():
