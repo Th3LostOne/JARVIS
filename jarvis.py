@@ -34,26 +34,36 @@ _LOG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis.lo
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
 
 class HourlyClearHandler(logging.FileHandler):
+    """File handler that wipes the log once per hour to keep it small."""
     def __init__(self, filename, mode='a', encoding=None, delay=False):
         super().__init__(filename, mode, encoding, delay)
-        self.next_clear = time.time() + 600
+        self.next_clear = time.time() + 3600   # actually hourly
 
     def emit(self, record):
         if time.time() >= self.next_clear:
             self.close()
-            # Clear the file entirely
             with open(self.baseFilename, 'w', encoding=self.encoding): pass
             self.stream = self._open()
-            self.next_clear = time.time() + 600
+            self.next_clear = time.time() + 3600
         super().emit(record)
+
+_log_handlers = [HourlyClearHandler(_LOG_FILE, encoding="utf-8")]
+try:
+    # Only attach a console handler when a real console is available.
+    # sys.stdout.fileno() raises io.UnsupportedOperation when running
+    # as a background/GUI process (no attached terminal), which would
+    # silently break the entire logging config including the file handler.
+    _console_stream = open(
+        sys.stdout.fileno(), mode='w', encoding='utf-8', errors='replace', closefd=False
+    )
+    _log_handlers.append(logging.StreamHandler(_console_stream))
+except Exception:
+    pass  # No console — file-only logging
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        HourlyClearHandler(_LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(open(sys.stdout.fileno(), mode='w', encoding='utf-8', errors='replace', closefd=False)),
-    ],
+    handlers=_log_handlers,
 )
 log = logging.getLogger("JARVIS")
 
@@ -1241,57 +1251,70 @@ def _recognize_audio(duration=6):
         return None
 
 def _isolate_background_music(wav_path):
-    """Run Demucs to strip vocals/dialogue and return a path to the background-only WAV.
-    Takes the drums+bass+other stems (everything except vocals).
-    Returns output path or None if Demucs/torch unavailable."""
+    """Run Demucs CLI (--two-stems vocals) to strip dialogue/vocals.
+    Uses subprocess so every line of Demucs output — including download
+    progress and errors — is routed into jarvis.log.
+    Returns path to the no_vocals WAV or None on failure."""
+    import shutil
+
+    out_dir = tempfile.mkdtemp(prefix="jarvis_demucs_")
     try:
-        import torch
-        import torchaudio
-        from demucs.pretrained import get_model
-        from demucs.apply import apply_model
-    except ImportError as e:
-        log.warning(f"Demucs not installed: {e} — run: pip install demucs torch torchaudio")
-        return None
+        # --two-stems vocals: only separates into vocals vs no_vocals
+        # (much faster than 4-stem htdemucs and exactly what we need)
+        cmd = [
+            sys.executable, "-m", "demucs",
+            "--two-stems", "vocals",
+            "-n", "htdemucs",
+            "--out", out_dir,
+            wav_path,
+        ]
+        log.info(f"Demucs cmd: {' '.join(cmd)}")
 
-    try:
-        log.info("Loading Demucs htdemucs model (first run downloads ~80 MB)...")
-        model = get_model("htdemucs")
-        model.eval()
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,   # merge stderr → stdout so we capture everything
+            text=True,
+            timeout=300,                # 5-minute hard cap
+            creationflags=_NO_WINDOW,
+        )
 
-        wav, sr = torchaudio.load(wav_path)
+        # Pipe every line of Demucs output into our log
+        for line in (proc.stdout or "").splitlines():
+            if line.strip():
+                log.info(f"[demucs] {line}")
 
-        # Ensure stereo at the model's expected sample rate
-        if sr != model.samplerate:
-            wav = torchaudio.functional.resample(wav, sr, model.samplerate)
-        if wav.shape[0] == 1:
-            wav = wav.repeat(2, 1)       # mono → stereo
-        else:
-            wav = wav[:2]                # keep only first 2 channels if surround
+        if proc.returncode != 0:
+            log.error(f"Demucs exited with code {proc.returncode}")
+            return None
 
-        wav = wav.unsqueeze(0)           # (1, 2, samples)
+        # Expected output: {out_dir}/htdemucs/{trackname}/no_vocals.wav
+        track_name   = os.path.splitext(os.path.basename(wav_path))[0]
+        no_vocals_path = os.path.join(out_dir, "htdemucs", track_name, "no_vocals.wav")
 
-        log.info("Separating audio stems...")
-        with torch.no_grad():
-            sources = apply_model(model, wav, device="cpu", progress=False)
-        # sources: (batch=1, num_stems, channels=2, samples)
+        if not os.path.exists(no_vocals_path):
+            # Log every file Demucs actually created so we can debug
+            for root, _, files in os.walk(out_dir):
+                for f in files:
+                    log.info(f"[demucs] created: {os.path.join(root, f)}")
+            log.error(f"no_vocals.wav not found at expected path: {no_vocals_path}")
+            return None
 
-        stem_names = list(model.sources)  # ['drums', 'bass', 'other', 'vocals']
-        log.info(f"Demucs stems: {stem_names}")
-
-        # Sum every stem except vocals — that's the background OST
-        background = torch.zeros_like(sources[0, 0])
-        for i, name in enumerate(stem_names):
-            if name != "vocals":
-                background += sources[0, i]
-
-        bg_path = wav_path.replace(".wav", "_bg.wav")
-        torchaudio.save(bg_path, background, model.samplerate)
+        # Copy out before we delete the demucs temp dir
+        with tempfile.NamedTemporaryFile(suffix="_no_vocals.wav", delete=False) as f:
+            bg_path = f.name
+        shutil.copy2(no_vocals_path, bg_path)
         log.info(f"Background isolated → {bg_path}")
         return bg_path
 
-    except Exception as e:
-        log.error(f"Demucs separation error: {e}")
+    except subprocess.TimeoutExpired:
+        log.error("Demucs timed out (>5 min). Try a shorter capture duration.")
         return None
+    except Exception as e:
+        log.error(f"Demucs error: {e}", exc_info=True)
+        return None
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
 
 def _identify_anime_ost(duration=10):
     """Full pipeline: capture system audio → strip vocals → fingerprint via AudD.
@@ -1974,15 +1997,14 @@ def process_command(text):
         import wave
 
         # ── 0. Dependency check — fail loudly before making promises ──
+        import importlib.util
         missing = []
-        try:
-            import pyaudiowpatch
-        except ImportError:
+        if importlib.util.find_spec("pyaudiowpatch") is None:
             missing.append("pyaudiowpatch  →  pip install pyaudiowpatch")
-        try:
-            import demucs, torch, torchaudio
-        except ImportError:
-            missing.append("demucs / torch  →  pip install demucs torch torchaudio")
+        if importlib.util.find_spec("demucs") is None:
+            missing.append("demucs  →  pip install demucs torch torchaudio")
+        elif importlib.util.find_spec("torch") is None:
+            missing.append("torch  →  pip install torch torchaudio")
         if missing:
             speak("I'm missing required packages, sir: " + ", and ".join(missing))
             log.warning(f"Anime OST: missing deps: {missing}")
