@@ -375,16 +375,32 @@ except Exception as e:
 # ─────────────────────────────────────────
 #  TTS  — Microsoft Edge neural voices via edge-tts
 # ─────────────────────────────────────────
+_USE_EDGE_TTS = False
 try:
     import edge_tts
     import pygame
-    pygame.mixer.pre_init(frequency=24000, size=-16, channels=2, buffer=512)
-    pygame.mixer.init()
-    _USE_EDGE_TTS = True
-    log.info(f"  ✓ Edge TTS ready — voice: {TTS_VOICE}")
+    _USE_EDGE_TTS = True          # packages present; mixer init happens below
 except ImportError as _tts_err:
-    _USE_EDGE_TTS = False
-    log.warning(f"  ✗ Edge TTS unavailable ({_tts_err}) — falling back to pyttsx3 (robotic)")
+    log.warning(f"  ✗ Edge TTS unavailable ({_tts_err}) — falling back to pyttsx3")
+
+def _init_pygame_mixer():
+    """Initialise (or re-initialise) pygame mixer. Returns True on success."""
+    try:
+        if pygame.mixer.get_init():
+            return True
+        pygame.mixer.pre_init(frequency=24000, size=-16, channels=2, buffer=512)
+        pygame.mixer.init()
+        log.info("  ✓ pygame mixer initialised")
+        return True
+    except Exception as e:
+        log.warning(f"  ✗ pygame mixer init failed: {e}")
+        return False
+
+if _USE_EDGE_TTS:
+    if _init_pygame_mixer():
+        log.info(f"  ✓ Edge TTS ready — voice: {TTS_VOICE}")
+    else:
+        log.warning("  ✗ pygame mixer not ready at startup — will retry on first speak")
 
 _tts_queue = queue.Queue()
 
@@ -426,6 +442,68 @@ async def _cache_tts_async(text):
     _audio_cache[key] = path
     return path
 
+def _speak_pyttsx3(text):
+    """Speak via pyttsx3 in a subprocess (always available, no network needed)."""
+    code = (
+        f"import pyttsx3\n"
+        f"try:\n"
+        f"    e=pyttsx3.init(); e.setProperty('rate',{TTS_RATE}); e.setProperty('volume',{TTS_VOLUME})\n"
+        f"    v=e.getProperty('voices')\n"
+        f"    if v: e.setProperty('voice',v[0].id)\n"
+        f"    e.say({repr(text)}); e.runAndWait()\n"
+        f"except Exception: pass\n"
+    )
+    subprocess.run([sys.executable, "-c", code], shell=False, creationflags=_NO_WINDOW)
+
+def _speak_edge(text):
+    """Speak via edge-tts + pygame. Retries up to 3× with reinit on failure.
+    Falls back to pyttsx3 if all retries are exhausted."""
+    for attempt in range(3):
+        audio_path = None
+        is_temp    = False
+        try:
+            # Re-init pygame mixer if it went down (e.g. audio service restarted)
+            if not pygame.mixer.get_init():
+                log.warning("pygame mixer not initialised — retrying...")
+                if not _init_pygame_mixer():
+                    time.sleep(2 ** attempt)
+                    continue
+
+            cached = _get_cached_tts(text)
+            if cached:
+                audio_path = cached
+            else:
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                    audio_path = f.name
+                asyncio.run(
+                    edge_tts.Communicate(text, voice=TTS_VOICE, rate=TTS_EDGE_RATE).save(audio_path)
+                )
+                is_temp = True
+
+            pygame.mixer.music.load(audio_path)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                time.sleep(0.05)
+            pygame.mixer.music.unload()
+            return  # ← success
+
+        except Exception as e:
+            log.warning(f"Edge TTS attempt {attempt + 1}/3 failed: {e}")
+            # Clean up broken temp file before retry
+            if is_temp and audio_path:
+                try: os.unlink(audio_path)
+                except OSError: pass
+            # Reset pygame before next attempt
+            try:
+                pygame.mixer.quit()
+            except Exception:
+                pass
+            if attempt < 2:
+                time.sleep(2 ** attempt)   # 1 s, then 2 s
+            else:
+                log.error("Edge TTS failed 3×— using pyttsx3 for this message.")
+                _speak_pyttsx3(text)
+
 def _tts_worker():
     while True:
         text = _tts_queue.get()
@@ -433,42 +511,11 @@ def _tts_worker():
             break
         try:
             if _USE_EDGE_TTS:
-                cached = _get_cached_tts(text)
-                if cached:
-                    audio_path, is_temp = cached, False
-                else:
-                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                        audio_path = f.name
-                    asyncio.run(edge_tts.Communicate(text, voice=TTS_VOICE, rate=TTS_EDGE_RATE).save(audio_path))
-                    is_temp = True
-                pygame.mixer.music.load(audio_path)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.05)
-                pygame.mixer.music.unload()
-                if is_temp:
-                    try:
-                        os.unlink(audio_path)
-                    except Exception:
-                        pass
+                _speak_edge(text)
             else:
-                # pyttsx3 fallback if edge-tts not installed
-                code = f"""
-import pyttsx3
-try:
-    engine = pyttsx3.init()
-    engine.setProperty('rate', {TTS_RATE})
-    engine.setProperty('volume', {TTS_VOLUME})
-    voices = engine.getProperty('voices')
-    if voices: engine.setProperty('voice', voices[0].id)
-    engine.say({repr(text)})
-    engine.runAndWait()
-except Exception: pass
-"""
-                flags = _NO_WINDOW
-                subprocess.run([sys.executable, "-c", code], shell=False, creationflags=flags)
+                _speak_pyttsx3(text)
         except Exception as ex:
-            log.error(f"TTS error: {ex}")
+            log.error(f"TTS worker error: {ex}")
         _tts_queue.task_done()
 
 threading.Thread(target=_tts_worker, daemon=True).start()
@@ -2534,6 +2581,18 @@ def listen_loop():
         return
 
     with mic as source:
+        # On a fresh boot Windows Audio and the network stack may not be ready.
+        # Wait up to 10 s for the audio service, checking every second.
+        for _wait in range(10):
+            try:
+                import pygame as _pg
+                if _pg.mixer.get_init() or _init_pygame_mixer():
+                    break
+            except Exception:
+                pass
+            log.info(f"  ⏳ Waiting for audio service... ({_wait+1}/10)")
+            time.sleep(1)
+
         log.info("🎙  Calibrating mic...")
         recognizer.adjust_for_ambient_noise(source, duration=2)
         log.info(f"✅  Listening for '{WAKE_WORD.upper()}'")
