@@ -4,7 +4,8 @@
 ║   Lightweight Background Voice Assistant ║
 ╚══════════════════════════════════════════╝
 Install: pip install speechrecognition pyttsx3 requests pyaudio pystray pillow
-         pip install pyaudiowpatch   ← system audio (loopback) for music recognition
+         pip install pyaudiowpatch            ← system audio loopback for music recognition
+         pip install demucs torch torchaudio  ← anime OST isolation (vocal removal)
 Requires Ollama running locally: https://ollama.com  (ollama pull llama3)
 """
 
@@ -779,6 +780,15 @@ def parse_intent(text):
                              "what is this song", "find this song"]):
         return ("identify_music", None)
 
+    # Anime OST recognition — vocal removal + fingerprint
+    if any(w in t for w in ["what anime song is this", "find the anime music",
+                             "what's the ost", "what is the ost", "identify the ost",
+                             "anime ost", "anime music lookup", "what's the background music",
+                             "find the background song", "what's playing in the background",
+                             "isolate the background", "remove the voices",
+                             "what's the soundtrack", "identify the soundtrack"]):
+        return ("anime_ost", None)
+
     # List active timers
     if any(w in t for w in ["list timers", "active timers", "what timers", "how many timers",
                              "check timers", "show timers", "my timers"]):
@@ -1220,6 +1230,121 @@ def _recognize_audio(duration=6):
     except Exception as e:
         log.error(f"AudD request error: {e}")
         try: os.unlink(tmp_path)
+        except OSError: pass
+        return None
+
+def _isolate_background_music(wav_path):
+    """Run Demucs to strip vocals/dialogue and return a path to the background-only WAV.
+    Takes the drums+bass+other stems (everything except vocals).
+    Returns output path or None if Demucs/torch unavailable."""
+    try:
+        import torch
+        import torchaudio
+        from demucs.pretrained import get_model
+        from demucs.apply import apply_model
+    except ImportError as e:
+        log.warning(f"Demucs not installed: {e} — run: pip install demucs torch torchaudio")
+        return None
+
+    try:
+        log.info("Loading Demucs htdemucs model (first run downloads ~80 MB)...")
+        model = get_model("htdemucs")
+        model.eval()
+
+        wav, sr = torchaudio.load(wav_path)
+
+        # Ensure stereo at the model's expected sample rate
+        if sr != model.samplerate:
+            wav = torchaudio.functional.resample(wav, sr, model.samplerate)
+        if wav.shape[0] == 1:
+            wav = wav.repeat(2, 1)       # mono → stereo
+        else:
+            wav = wav[:2]                # keep only first 2 channels if surround
+
+        wav = wav.unsqueeze(0)           # (1, 2, samples)
+
+        log.info("Separating audio stems...")
+        with torch.no_grad():
+            sources = apply_model(model, wav, device="cpu", progress=False)
+        # sources: (batch=1, num_stems, channels=2, samples)
+
+        stem_names = list(model.sources)  # ['drums', 'bass', 'other', 'vocals']
+        log.info(f"Demucs stems: {stem_names}")
+
+        # Sum every stem except vocals — that's the background OST
+        background = torch.zeros_like(sources[0, 0])
+        for i, name in enumerate(stem_names):
+            if name != "vocals":
+                background += sources[0, i]
+
+        bg_path = wav_path.replace(".wav", "_bg.wav")
+        torchaudio.save(bg_path, background, model.samplerate)
+        log.info(f"Background isolated → {bg_path}")
+        return bg_path
+
+    except Exception as e:
+        log.error(f"Demucs separation error: {e}")
+        return None
+
+def _identify_anime_ost(duration=10):
+    """Full pipeline: capture system audio → strip vocals → fingerprint via AudD.
+    Returns result dict or None."""
+    import wave
+
+    # ── 1. Capture system audio (loopback preferred) ──────────────────
+    captured = _record_system_audio(duration)
+    if not captured:
+        log.warning("System audio capture unavailable for anime OST recognition.")
+        return None
+    frames, channels, rate, sample_width = captured
+
+    with tempfile.NamedTemporaryFile(suffix="_raw.wav", delete=False) as f:
+        raw_path = f.name
+    with wave.open(raw_path, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(rate)
+        wf.writeframes(b"".join(frames))
+    log.info(f"System audio saved: {raw_path} ({duration}s, {rate}Hz, {channels}ch)")
+
+    # ── 2. Isolate background music with Demucs ────────────────────────
+    bg_path = _isolate_background_music(raw_path)
+    try: os.unlink(raw_path)
+    except OSError: pass
+
+    if not bg_path:
+        return None
+
+    # ── 3. Send isolated background to AudD ───────────────────────────
+    try:
+        with open(bg_path, "rb") as audio_file:
+            r = requests.post(
+                "https://api.audd.io/",
+                data={"return": "spotify,apple_music"},
+                files={"file": ("background.wav", audio_file, "audio/wav")},
+                timeout=20,
+            )
+        try: os.unlink(bg_path)
+        except OSError: pass
+
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "success" and data.get("result"):
+                res = data["result"]
+                spotify_url = (res.get("spotify") or {}).get("external_urls", {}).get("spotify", "")
+                return {
+                    "title":   res.get("title", ""),
+                    "artist":  res.get("artist", ""),
+                    "album":   res.get("album", ""),
+                    "spotify": spotify_url,
+                }
+            log.info(f"AudD no match — {data.get('status')} {data.get('error', '')}")
+        else:
+            log.warning(f"AudD HTTP {r.status_code}: {r.text[:200]}")
+        return None
+    except Exception as e:
+        log.error(f"AudD request error: {e}")
+        try: os.unlink(bg_path)
         except OSError: pass
         return None
 
@@ -1838,6 +1963,32 @@ def process_command(text):
             else:
                 speak("I wasn't able to identify that one, sir. Make sure something is audible and try again.")
 
+    elif intent == "anime_ost":
+        speak("Capturing your system audio, sir.")
+        # speak() is async — processing below runs while that line plays
+        speak("Stripping the character voices with Demucs. This takes about thirty seconds, sir.")
+        log.info("Anime OST recognition pipeline starting...")
+        result = _identify_anime_ost(duration=10)
+        if result and result.get("title"):
+            title  = result["title"]
+            artist = result["artist"]
+            album  = result.get("album", "")
+            speak(f"Found it, sir. That's {title} by {artist}{', from ' + album if album else ''}.")
+            if result.get("spotify"):
+                open_in_brave(result["spotify"])
+                log.info(f"Opened Spotify: {result['spotify']}")
+            else:
+                query = f"{title} {artist}".replace(" ", "+")
+                open_in_brave(f"https://www.youtube.com/results?search_query={query}")
+            log.info(f"Anime OST identified: {title} – {artist}")
+        else:
+            speak(
+                "I couldn't identify that one, sir. "
+                "The OST may not be in the database yet, or there wasn't enough clean audio. "
+                "Make sure Demucs and PyTorch are installed and try again with a longer segment."
+            )
+            log.info("Anime OST: no match.")
+
     elif intent == "list_timers":
         if not _active_timers:
             speak("You have no active timers, sir.")
@@ -2181,7 +2332,8 @@ def build_tray(on_ready=None):
             "SEARCH: 'search for [query]'\n"
             "MEDIA: 'play', 'pause', 'next song', 'previous song'\n"
             "         'what's playing', 'now playing'\n"
-            "         'what song is this', 'shazam this' (mic recognition)\n"
+            "         'what song is this', 'shazam this' (system audio)\n"
+            "         'what's the OST', 'anime OST' (vocal removal + fingerprint)\n"
             "VOLUME: 'volume up/down', 'mute', 'set volume to 50'\n"
             "SYSTEM: 'system status', 'lock screen', 'screenshot'\n"
             "         'shutdown', 'restart', 'sleep'\n"
