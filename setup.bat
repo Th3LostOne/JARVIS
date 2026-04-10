@@ -7,21 +7,35 @@ echo   JARVIS -- LINKS MARK II  //  SETUP
 echo  ============================================================
 echo.
 
-python --version >nul 2>&1
+set PYTHON=C:\Users\Morpheus\AppData\Local\Programs\Python\Python310\python.exe
+set PIP=%PYTHON% -m pip
+
+"%PYTHON%" --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [!] Python not found. Download from https://www.python.org
+    echo [!] Python 3.10 not found at expected path.
+    echo     Expected: %PYTHON%
+    echo     Download from https://www.python.org
     pause & exit /b 1
 )
-echo [+] Python found.
+echo [+] Python 3.10 found.
 
-echo [+] Installing packages...
-pip install speechrecognition pyttsx3 requests pyaudio pystray pillow edge-tts pygame --quiet
+echo [+] Installing core packages...
+"%PIP%" install speechrecognition pyttsx3 requests pystray pillow --quiet
+
+echo [+] Installing audio packages...
+"%PIP%" install pyaudiowpatch pygame edge-tts --quiet
+
+echo [+] Installing AI / media packages...
+"%PIP%" install wikipedia-api pytz wolframalpha --quiet
+
+echo [+] Installing Demucs + torch (may take a few minutes)...
+"%PIP%" install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
+"%PIP%" install demucs soundfile --quiet
+"%PIP%" install "numpy<2.0" --quiet
 
 if %errorlevel% neq 0 (
     echo.
-    echo [!] PyAudio failed? Try:
-    echo     pip install pipwin
-    echo     pipwin install pyaudio
+    echo [!] Some packages may have failed. Check output above.
     echo.
 )
 
