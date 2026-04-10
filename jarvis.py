@@ -1082,7 +1082,6 @@ def _get_music_from_browser():
 def _record_system_audio(duration=6):
     """Capture system audio via WASAPI loopback (what's playing through speakers).
     Returns (frames, channels, rate, sample_width) or None."""
-    import wave
     try:
         import pyaudiowpatch as pyaudio
     except ImportError:
@@ -1091,38 +1090,46 @@ def _record_system_audio(duration=6):
 
     p = pyaudio.PyAudio()
     try:
-        wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-    except OSError:
-        p.terminate()
-        log.warning("WASAPI not available on this system.")
-        return None
+        try:
+            wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+        except OSError:
+            log.warning("WASAPI not available on this system.")
+            return None
 
-    # Find loopback device matching the default output
-    default_out = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-    loopback = None
-    for i in range(p.get_device_count()):
-        dev = p.get_device_info_by_index(i)
-        if dev.get("isLoopbackDevice") and default_out["name"] in dev["name"]:
-            loopback = dev
-            break
-    if not loopback:  # fall back to any loopback device
-        for i in range(p.get_device_count()):
-            dev = p.get_device_info_by_index(i)
-            if dev.get("isLoopbackDevice"):
-                loopback = dev
-                break
+        default_out = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+        loopback = None
 
-    if not loopback:
-        p.terminate()
-        log.warning("No WASAPI loopback device found.")
-        return None
+        # Prefer the generator helper (pyaudiowpatch >= 0.2.12)
+        try:
+            for dev in p.get_loopback_device_info_generator():
+                if default_out["name"] in dev["name"]:
+                    loopback = dev
+                    break
+            if not loopback:
+                for dev in p.get_loopback_device_info_generator():
+                    loopback = dev   # any loopback
+                    break
+        except AttributeError:
+            # Older pyaudiowpatch — scan manually
+            for i in range(p.get_device_count()):
+                dev = p.get_device_info_by_index(i)
+                if dev.get("isLoopbackDevice"):
+                    if not loopback or default_out["name"] in dev["name"]:
+                        loopback = dev
 
-    channels = min(int(loopback["maxInputChannels"]), 2)
-    rate     = int(loopback["defaultSampleRate"])
-    chunk    = 1024
-    log.info(f"Loopback device: {loopback['name']} | {channels}ch | {rate}Hz")
+        if not loopback:
+            log.warning("No WASAPI loopback device found.")
+            return None
 
-    try:
+        # WASAPI loopback devices are output devices captured as input.
+        # maxInputChannels may be 0; use maxOutputChannels as fallback.
+        ch_in  = int(loopback.get("maxInputChannels")  or 0)
+        ch_out = int(loopback.get("maxOutputChannels") or 2)
+        channels = max(1, min(ch_in if ch_in > 0 else ch_out, 2))
+        rate  = int(loopback["defaultSampleRate"])
+        chunk = 1024
+        log.info(f"Loopback: '{loopback['name']}' | {channels}ch | {rate}Hz")
+
         stream = p.open(
             format=pyaudio.paInt16,
             channels=channels,
@@ -1136,13 +1143,13 @@ def _record_system_audio(duration=6):
         stream.stop_stream()
         stream.close()
         sample_width = p.get_sample_size(pyaudio.paInt16)
+        return frames, channels, rate, sample_width
+
     except Exception as e:
         log.error(f"System audio capture failed: {e}")
-        p.terminate()
         return None
-
-    p.terminate()
-    return frames, channels, rate, sample_width
+    finally:
+        p.terminate()
 
 def _recognize_audio(duration=6):
     """Capture system audio (loopback) and identify via AudD.
@@ -1964,30 +1971,116 @@ def process_command(text):
                 speak("I wasn't able to identify that one, sir. Make sure something is audible and try again.")
 
     elif intent == "anime_ost":
-        speak("Capturing your system audio, sir.")
-        # speak() is async — processing below runs while that line plays
-        speak("Stripping the character voices with Demucs. This takes about thirty seconds, sir.")
-        log.info("Anime OST recognition pipeline starting...")
-        result = _identify_anime_ost(duration=10)
-        if result and result.get("title"):
-            title  = result["title"]
-            artist = result["artist"]
-            album  = result.get("album", "")
-            speak(f"Found it, sir. That's {title} by {artist}{', from ' + album if album else ''}.")
-            if result.get("spotify"):
-                open_in_brave(result["spotify"])
-                log.info(f"Opened Spotify: {result['spotify']}")
+        import wave
+
+        # ── 0. Dependency check — fail loudly before making promises ──
+        missing = []
+        try:
+            import pyaudiowpatch
+        except ImportError:
+            missing.append("pyaudiowpatch  →  pip install pyaudiowpatch")
+        try:
+            import demucs, torch, torchaudio
+        except ImportError:
+            missing.append("demucs / torch  →  pip install demucs torch torchaudio")
+        if missing:
+            speak("I'm missing required packages, sir: " + ", and ".join(missing))
+            log.warning(f"Anime OST: missing deps: {missing}")
+            return
+
+        # ── 1. Capture system audio (10 s — speech plays during recording) ──
+        speak("Capturing your system audio now, sir. Recording ten seconds.")
+        log.info("Anime OST: capturing system audio...")
+        captured = _record_system_audio(duration=10)
+        if not captured:
+            speak("I couldn't capture the system audio, sir. "
+                  "Check that pyaudiowpatch is installed and that audio is playing.")
+            return
+        frames, channels, rate, sample_width = captured
+
+        # Quick energy check — make sure something is actually audible
+        import numpy as np
+        audio_np = np.frombuffer(b"".join(frames), dtype=np.int16)
+        energy = float(np.abs(audio_np).mean())
+        log.info(f"Audio energy: {energy:.1f}")
+        if energy < 50:
+            speak("The audio appears to be silent, sir. Make sure the volume is up and try again.")
+            return
+
+        # Write captured audio to a temp WAV
+        with tempfile.NamedTemporaryFile(suffix="_raw.wav", delete=False) as f:
+            raw_path = f.name
+        with wave.open(raw_path, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(rate)
+            wf.writeframes(b"".join(frames))
+        log.info(f"Raw audio saved: {raw_path}")
+
+        # ── 2. Demucs separation (20-60 s on CPU — speech plays during it) ──
+        speak("Removing character voices now, sir. Thirty seconds or so.")
+        log.info("Anime OST: running Demucs separation...")
+        bg_path = _isolate_background_music(raw_path)
+        try: os.unlink(raw_path)
+        except OSError: pass
+
+        if not bg_path:
+            speak("Demucs separation failed, sir. "
+                  "Make sure torch and demucs are properly installed.")
+            return
+
+        # ── 3. AudD fingerprint (speech plays during the request) ──────────
+        speak("Checking the database, sir.")
+        log.info("Anime OST: sending isolated background to AudD...")
+        try:
+            with open(bg_path, "rb") as audio_file:
+                r = requests.post(
+                    "https://api.audd.io/",
+                    data={"return": "spotify,apple_music"},
+                    files={"file": ("background.wav", audio_file, "audio/wav")},
+                    timeout=20,
+                )
+            try: os.unlink(bg_path)
+            except OSError: pass
+
+            ost = None
+            if r.status_code == 200:
+                data = r.json()
+                log.info(f"AudD: status={data.get('status')} result={bool(data.get('result'))}")
+                if data.get("status") == "success" and data.get("result"):
+                    res = data["result"]
+                    spotify_url = (res.get("spotify") or {}).get("external_urls", {}).get("spotify", "")
+                    ost = {
+                        "title":   res.get("title", ""),
+                        "artist":  res.get("artist", ""),
+                        "album":   res.get("album", ""),
+                        "spotify": spotify_url,
+                    }
             else:
-                query = f"{title} {artist}".replace(" ", "+")
-                open_in_brave(f"https://www.youtube.com/results?search_query={query}")
-            log.info(f"Anime OST identified: {title} – {artist}")
-        else:
-            speak(
-                "I couldn't identify that one, sir. "
-                "The OST may not be in the database yet, or there wasn't enough clean audio. "
-                "Make sure Demucs and PyTorch are installed and try again with a longer segment."
-            )
-            log.info("Anime OST: no match.")
+                log.warning(f"AudD HTTP {r.status_code}: {r.text[:200]}")
+
+            if ost and ost.get("title"):
+                title  = ost["title"]
+                artist = ost["artist"]
+                album  = ost.get("album", "")
+                speak(f"Found it, sir. That's {title} by {artist}"
+                      f"{', from ' + album if album else ''}.")
+                if ost.get("spotify"):
+                    open_in_brave(ost["spotify"])
+                else:
+                    query = f"{title} {artist}".replace(" ", "+")
+                    open_in_brave(f"https://www.youtube.com/results?search_query={query}")
+                log.info(f"Anime OST identified: {title} – {artist}")
+            else:
+                speak("I couldn't match that one in the database, sir. "
+                      "The OST may not be catalogued yet, or try during a louder section.")
+                log.info(f"Anime OST: no match. Raw AudD: {r.text[:300]}")
+
+        except Exception as e:
+            speak("I had trouble reaching the AudD database, sir.")
+            log.error(f"AudD request error: {e}")
+            try: os.unlink(bg_path)
+            except OSError: pass
 
     elif intent == "list_timers":
         if not _active_timers:
