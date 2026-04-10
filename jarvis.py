@@ -3,9 +3,13 @@
 ║   JARVIS - LINKS Mark II                 ║
 ║   Lightweight Background Voice Assistant ║
 ╚══════════════════════════════════════════╝
-Install: pip install speechrecognition pyttsx3 requests pyaudio pystray pillow
-         pip install pyaudiowpatch            ← system audio loopback for music recognition
-         pip install demucs torch torchaudio  ← anime OST isolation (vocal removal)
+Requires Python 3.10  (py -3.10 jarvis.py)
+Install (run with py -3.10 -m pip install ...):
+         speechrecognition pyttsx3 requests pyaudio pystray pillow
+         edge-tts pygame psutil
+         pyaudiowpatch            ← system audio loopback for music recognition
+         demucs torch torchaudio  ← anime OST isolation (vocal removal)
+         "numpy<2.0"              ← keep numpy 1.x; torch 2.2.2 crashes on numpy 2.x
 Requires Ollama running locally: https://ollama.com  (ollama pull llama3)
 """
 
